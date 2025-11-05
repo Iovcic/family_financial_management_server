@@ -1,0 +1,7 @@
+{
+  "emmet.preferences": {},
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "eslint.validate": ["typescript"],
+  "files.eol": "\n"
+}
