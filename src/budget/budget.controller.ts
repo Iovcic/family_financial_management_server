@@ -1,12 +1,11 @@
 import { Request, Response } from 'express';
-import { ICreateBudgetDTO, IUpdateBudgetDTO } from './types.js';
-import BudgetModel from './budget.model.js';
+import BudgetModel, { CreateBudgetDTO, UpdateBudgetDTO } from './budget.model.js';
 
 class BudgetController {
     // POST /api/budgets - Crează un buget nou
     async create(req: Request, res: Response): Promise<void> {
         try {
-            const { user_id, month, year, total_budget }: ICreateBudgetDTO = req.body;
+            const { user_id, month, year, total_budget }: CreateBudgetDTO = req.body;
 
             // Validare
             if (!user_id || !month || !year || total_budget === undefined) {
@@ -68,7 +67,7 @@ class BudgetController {
         }
     }
 
-    // GET /api/budgets/:id - Obține un buget după ID
+    // GET /api/budgets/:id - Obține un buget după ID (cu category_budgets)
     async getById(req: Request, res: Response): Promise<void> {
         try {
             const id = parseInt(req.params.id);
@@ -81,7 +80,7 @@ class BudgetController {
                 return;
             }
 
-            const budget = await BudgetModel.findById(id);
+            const budget = await BudgetModel.findByIdWithCategories(id);
 
             if (!budget) {
                 res.status(404).json({
@@ -104,7 +103,7 @@ class BudgetController {
         }
     }
 
-    // GET /api/budgets/user/:userId - Obține toate bugetele unui user
+    // GET /api/budgets/user/:userId - Obține toate bugetele unui user (cu category_budgets)
     async getAllByUser(req: Request, res: Response): Promise<void> {
         try {
             const userId = parseInt(req.params.userId);
@@ -117,7 +116,7 @@ class BudgetController {
                 return;
             }
 
-            const budgets = await BudgetModel.findAllByUser(userId);
+            const budgets = await BudgetModel.findAllByUserWithCategories(userId);
 
             res.status(200).json({
                 success: true,
@@ -132,7 +131,7 @@ class BudgetController {
         }
     }
 
-    // GET /api/budgets/user/:userId/:year/:month - Obține buget specific
+    // GET /api/budgets/user/:userId/:year/:month - Obține buget specific (cu category_budgets)
     async getByUserAndDate(req: Request, res: Response): Promise<void> {
         try {
             const userId = parseInt(req.params.userId);
@@ -147,7 +146,7 @@ class BudgetController {
                 return;
             }
 
-            const budget = await BudgetModel.findByUserAndDate(userId, month, year);
+            const budget = await BudgetModel.findByUserAndDateWithCategories(userId, month, year);
 
             if (!budget) {
                 res.status(404).json({
@@ -174,7 +173,7 @@ class BudgetController {
     async update(req: Request, res: Response): Promise<void> {
         try {
             const id = parseInt(req.params.id);
-            const { total_budget }: IUpdateBudgetDTO = req.body;
+            const { total_budget }: UpdateBudgetDTO = req.body;
 
             if (isNaN(id)) {
                 res.status(400).json({
