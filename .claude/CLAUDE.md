@@ -1,0 +1,1018 @@
+Replacing a Google Sheets workflow for managing family finances. The sheet has months displayed side by side, each
+with a 3-column layout: Category | Note | Amount, a total row, and a savings row. The new app replicates this grid UX
+in a browser, adds auth, multi-member family boards, inline editing with auto-save, and yearly charts. Deployed on
+Vercel with MySQL on Aiven.
+
+The existing directory had an Express + MySQL prototype (now deleted). We start fresh with Next.js fullstack in the
+same directory.
+
+---
+
+Stack
+
+┌────────────┬──────────────────────────────────────────────────┐
+│ Concern │ Choice │
+├────────────┼──────────────────────────────────────────────────┤
+│ Framework │ Next.js 14+ App Router (fullstack) │
+├────────────┼──────────────────────────────────────────────────┤
+│ Language │ TypeScript │
+├────────────┼──────────────────────────────────────────────────┤
+│ Styling │ Tailwind CSS │
+├────────────┼──────────────────────────────────────────────────┤
+│ ORM │ Prisma │
+├────────────┼──────────────────────────────────────────────────┤
+│ Database │ MySQL on Aiven │
+├────────────┼──────────────────────────────────────────────────┤
+│ Auth │ NextAuth.js (Credentials provider, JWT sessions) │
+├────────────┼──────────────────────────────────────────────────┤
+│ Validation │ Zod │
+├────────────┼──────────────────────────────────────────────────┤
+│ Charts │ Recharts │
+├────────────┼──────────────────────────────────────────────────┤
+│ Deploy │ Vercel │
+├────────────┼──────────────────────────────────────────────────┤
+│ Model │ Haiku (user preference) │
+└────────────┴──────────────────────────────────────────────────┘
+
+---
+
+Prisma Schema (prisma/schema.prisma)
+
+generator client {
+provider = "prisma-client-js"
+}
+
+datasource db {
+provider = "mysql"
+url = env("DATABASE_URL")
+}
+
+model User {
+id String @id @default(cuid())
+email String @unique
+name String?
+hashedPassword String
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+ownedBoards Board[] @relation("BoardOwner")
+boardMembers BoardMember[]
+}
+
+model Board {
+id String @id @default(cuid())
+name String
+ownerId String
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+owner User @relation("BoardOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+members BoardMember[]
+monthlyBudgets MonthlyBudget[]
+categories Category[]
+}
+
+model BoardMember {
+id String @id @default(cuid())
+boardId String
+userId String
+role BoardMemberRole @default(member)
+joinedAt DateTime @default(now())
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+@@unique([boardId, userId])
+}
+
+enum BoardMemberRole { owner member }
+
+model MonthlyBudget {
+id String @id @default(cuid())
+boardId String
+year Int
+month Int // 1–12
+income Decimal @default(0) @db.Decimal(12, 2)
+createdAt DateTime @default(now())
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+entries Entry[]
+@@unique([boardId, year, month])
+}
+
+model Entry {
+id String @id @default(cuid())
+monthlyBudgetId String
+categoryName String
+note String?
+amount Decimal @db.Decimal(12, 2)
+type EntryType @default(expense)
+color String? // hex, nullable = no highlight
+sortOrder Int @default(0)
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+monthlyBudget MonthlyBudget @relation(fields: [monthlyBudgetId], references: [id], onDelete: Cascade)
+}
+
+enum EntryType { expense income }
+
+model Category {
+id String @id @default(cuid())
+boardId String
+name String
+color String?
+icon String?
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+@@unique([boardId, name])
+}
+
+model Loan {
+id String @id @default(cuid())
+boardId String
+name String // e.g. "Credit Maib"
+lender String? // e.g. "Maib", "Victoria", "Maximum"
+totalAmount Decimal @db.Decimal(12, 2)
+paidAmount Decimal @default(0) @db.Decimal(12, 2)
+monthlyPayment Decimal @db.Decimal(12, 2)
+startDate DateTime
+endDate DateTime?
+isActive Boolean @default(true)
+notes String?
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+entries Entry[] // monthly payment entries linked to this loan
+}
+
+Update Entry to optionally reference a loan:
+model Entry {
+...
+loanId String?
+loan Loan? @relation(fields: [loanId], references: [id], onDelete: SetNull)
+}
+
+Key decisions:
+
+- Decimal @db.Decimal(12,2) — never Float for money
+- Category is autocomplete-only, not a FK on Entry (free-form like spreadsheet)
+- color on Entry is nullable — green rows in screenshot are per-entry
+- sortOrder uses gaps of 1000 for easy reordering
+- Loan.paidAmount is updated each time a linked Entry is added/deleted (or derived on read)
+- Loan.lender maps to the note column in the screenshot (e.g., "Maib", "Victoria")
+- When an entry is linked to a loan, the category cell shows the loan name and the note shows the lender — same visual
+  as current sheet
+
+---
+
+FSD Directory Structure
+
+src/
+├── app/
+│ ├── (auth)/login/page.tsx
+│ ├── (auth)/register/page.tsx
+│ ├── (dashboard)/
+│ │ ├── layout.tsx # Auth guard shell
+│ │ ├── page.tsx # → redirect to first board
+│ │ └── board/[boardId]/
+│ │ ├── page.tsx # Main board view (RSC)
+│ │ └── settings/page.tsx
+│ ├── api/
+│ │ ├── auth/[...nextauth]/route.ts
+│ │ ├── auth/register/route.ts
+│ │ ├── boards/route.ts # GET list, POST create
+│ │ ├── boards/[boardId]/route.ts
+│ │ ├── boards/[boardId]/members/route.ts
+│ │ ├── boards/[boardId]/budgets/route.ts # GET ?year=, POST create month
+│ │ ├── boards/[boardId]/budgets/[budgetId]/route.ts # PATCH income
+│ │ ├── boards/[boardId]/budgets/[budgetId]/entries/route.ts
+│ │ ├── boards/[boardId]/budgets/[budgetId]/duplicate/route.ts
+│ │ ├── boards/[boardId]/categories/route.ts
+│ │ ├── boards/[boardId]/loans/route.ts # GET list, POST create
+│ │ ├── loans/[loanId]/route.ts # PATCH update, DELETE/close
+│ │ └── entries/[entryId]/route.ts # PATCH, DELETE
+│ ├── globals.css
+│ └── layout.tsx
+│
+├── widgets/
+│ ├── board-grid/ui/BoardGrid.tsx # Horizontal scroll of MonthColumn[]
+│ ├── year-navigator/ui/YearNavigator.tsx
+│ ├── summary-bar/ui/SummaryBar.tsx # Income | Expenses | Savings
+│ ├── yearly-chart/ui/YearlyChart.tsx # Recharts ComposedChart
+│ └── loans-panel/ui/LoansPanel.tsx # List of active loans with progress bars
+│
+├── features/
+│ ├── auth/login/ui/LoginForm.tsx
+│ ├── auth/register/ui/RegisterForm.tsx
+│ ├── board-management/create-board/ui/CreateBoardForm.tsx
+│ ├── board-management/invite-member/ui/InviteMemberForm.tsx
+│ ├── entry-editing/
+│ │ ├── ui/InlineCell.tsx # Click→edit, view/edit toggle
+│ │ ├── ui/CategoryAutocomplete.tsx # Combobox with board categories
+│ │ ├── ui/ColorPicker.tsx
+│ │ ├── model/useAutoSave.ts # 500ms debounce + optimistic update
+│ │ └── model/entrySchema.ts
+│ ├── month-operations/duplicate-month/
+│ ├── month-operations/set-income/ui/IncomeCell.tsx
+│ └── loan-management/
+│ ├── ui/CreateLoanForm.tsx # name, lender, total, monthly, startDate
+│ ├── ui/LoanSelector.tsx # dropdown to link an entry → loan
+│ └── api/createLoan.ts
+│
+├── entities/
+│ ├── monthly-budget/
+│ │ ├── model/calculations.ts # totalExpenses(), savings() pure fns
+│ │ ├── ui/MonthColumn.tsx # Full month block
+│ │ ├── ui/MonthHeader.tsx
+│ │ └── ui/MonthFooter.tsx # Subtotal + Savings rows (sticky)
+│ ├── entry/ui/EntryRow.tsx # Category | Note | Amount | Actions
+│ ├── category/model/types.ts
+│ └── loan/
+│ ├── model/types.ts # Loan, LoanWithProgress interfaces
+│ ├── model/calculations.ts # remainingAmount(), remainingMonths() pure fns
+│ └── ui/LoanCard.tsx # Name, progress bar, paid/remaining amounts
+│
+└── shared/
+├── auth/authOptions.ts # NextAuth Credentials config
+├── auth/getServerSession.ts
+├── db/prisma.ts # PrismaClient singleton
+├── middleware/withBoardAccess.ts # Auth + membership check wrapper
+├── hooks/useDebounce.ts
+├── hooks/useKeyboardNav.ts # Enter/Tab/Escape cell navigation
+├── lib/formatCurrency.ts
+├── lib/monthNames.ts # Romanian month names array
+├── lib/cn.ts # clsx + tailwind-merge
+└── ui/ # Button, Input, Spinner, SaveIndicator
+
+---
+
+Component Hierarchy (Board Grid)
+
+BoardPage (RSC — server fetches full year data)
+└── BoardGridClient (Client Component — holds mutable state)
+├── SummaryBar (Income | Expenses | Savings)
+├── YearNavigator (← 2024 →)
+├── BoardGrid (overflow-x-auto, flex, gap-4)
+│ └── MonthColumn × 12
+│ ├── MonthHeader (month name + IncomeCell + Total)
+│ ├── EntryRow × N
+│ │ ├── InlineCell (categoryName) → CategoryAutocomplete
+│ │ ├── InlineCell (note)
+│ │ ├── InlineCell (amount)
+│ │ ├── ColorPicker
+│ │ └── DeleteRowButton
+│ ├── AddRowButton
+│ └── MonthFooter (Total row + Savings row — sticky)
+└── YearlyChart
+
+Each MonthColumn is 280px fixed width, flex-shrink-0. Mobile: full viewport width with horizontal scroll.
+
+---
+
+State Management
+
+No Redux/Zustand. Data scope is bounded (~360 rows max).
+
+- Initial data: RSC fetches full year on server, passes as initialData prop
+- Mutations: explicit fetch calls to API routes
+- Optimistic updates: React 19 useOptimistic in useAutoSave
+- Category autocomplete: SWR or simple useState fetch-on-first-focus
+
+useAutoSave(500ms debounce):
+
+1.  User types → local state update (instant)
+2.  After 500ms → updateOptimistic() + PATCH /api/entries/[id]
+3.  Success → SaveIndicator shows ✓
+4.  Error → revert optimistic state + toast
+
+Use API Routes (not Server Actions) — inline cell PATCH calls don't fit Server Action's form-submission model. API
+routes give full control over optimistic update lifecycle.
+
+---
+
+Auth Setup
+
+shared/auth/authOptions.ts — Credentials provider with bcrypt password check, JWT session with user.id in token.
+
+src/middleware.ts — next-auth/middleware protects /board/:path\* automatically.
+
+POST /api/auth/register — separate from NextAuth, creates user with bcrypt.hash(password, 12).
+
+---
+
+Keyboard Navigation
+
+useKeyboardNav attaches to MonthColumn:
+
+- Enter → same column, next row (or add row if last)
+- Tab → next column, same row (wraps to next row from amount)
+- Escape → cancel, revert to saved value
+
+Cells use data-row / data-col attributes for DOM-based focus targeting.
+
+---
+
+Key API Routes Summary
+
+┌──────────────┬──────────────────────────────────────────────┬──────────────────────────┐
+│ Method │ Path │ Purpose │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/auth/register │ Create user │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET/POST │ /api/boards │ List/create boards │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/members │ Invite by email │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET │ /api/boards/[boardId]/budgets?year= │ Full year data │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/budgets/[id]/entries │ Add entry │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ PATCH │ /api/entries/[entryId] │ Update entry field │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ DELETE │ /api/entries/[entryId] │ Delete entry │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/budgets/[id]/duplicate │ Copy month entries │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET │ /api/boards/[boardId]/categories │ Autocomplete suggestions │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET/POST │ /api/boards/[boardId]/loans │ List loans / create loan │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ PATCH/DELETE │ /api/loans/[loanId] │ Update or close a loan │
+└──────────────┴──────────────────────────────────────────────┴──────────────────────────┘
+
+All board-scoped routes use withBoardAccess wrapper (checks session + BoardMember row).
+
+---
+
+Deployment
+
+prisma/schema.prisma — Aiven MySQL requires SSL:
+DATABASE_URL=mysql://user:pass@host:port/db?ssl={"rejectUnauthorized":true}
+
+package.json:
+"postinstall": "prisma generate",
+"build": "prisma migrate deploy && next build"
+
+Vercel env vars: DATABASE_URL, NEXTAUTH_URL, NEXTAUTH_SECRET
+
+PrismaClient singleton (shared/db/prisma.ts):
+const globalForPrisma = globalThis as { prisma?: PrismaClient }
+export const prisma = globalForPrisma.prisma ?? new PrismaClient()
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+---
+
+Implementation Phases
+
+┌───────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Phase │ What │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1 — Foundation │ create-next-app, Prisma schema + migrate, auth (register/login), middleware │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 2 — Board mgmt │ Create board, invite member, board list page │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 3 — Grid core │ Fetch year data (RSC), MonthColumn, MonthHeader/Footer, EntryRow (view only) │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 4 — Inline │ InlineCell, useAutoSave, keyboard nav, CategoryAutocomplete, CRUD API routes │
+│ editing │ │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 5 — Polish │ SummaryBar, YearNavigator, YearlyChart, DuplicateMonth, color picker, mobile │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 5b — Loans │ Loan CRUD (create/edit/close), LoanSelector in EntryRow, LoansPanel widget, progress │
+│ │ tracking │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 6 — Deploy │ Vercel setup, Aiven prod DB, migrate, E2E test │
+└───────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+---
+
+Critical Files
+
+- prisma/schema.prisma — foundation; Decimal types, cascade deletes, unique constraints
+- src/shared/db/prisma.ts — singleton pattern (critical for Vercel serverless)
+- src/shared/auth/authOptions.ts — NextAuth Credentials + JWT callbacks
+- src/shared/middleware/withBoardAccess.ts — single auth gate for all board API routes
+- src/entities/monthly-budget/ui/MonthColumn.tsx — central UI; all grid features compose here
+- src/features/entry-editing/model/useAutoSave.ts — core UX differentiator
+
+---
+
+Verification
+
+1.  prisma studio — verify schema relations and data integrity
+2.  Register → login → create board → invite second user
+3.  Add entries, edit inline, verify auto-save fires and SaveIndicator shows ✓
+4.  Tab/Enter navigation moves focus correctly across cells
+5.  Savings row = income − sum(expenses) updates instantly
+6.  Duplicate month copies all entries to target month
+7.  Yearly chart renders bars for all 12 months
+8.  Mobile: horizontal scroll works, cells are tappable
+9.  Vercel preview URL: full auth + board flow works end-to-end
+    ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+1.  Yes, auto-accept edits
+2.  Yes, manually approve edits
+3.  No, refine with Ultraplan on Claude Code on the web
+    ❯ 4. Loans should be showed as categories. First loan1, loan2..., category1,
+    category2.....
+    shift+tab to approve with this feedback
+
+ctrl-g to edit in Notepad · ~\.claude\plans\humming-snuggling-duckling.md
+▐▛███▜▌ Claude Code v2.1.110
+▝▜█████▛▘ Sonnet 4.6 · Claude Pro
+▘▘ ▝▝ ~\Documents\financial\family_financial_management_server
+
+❯ /clear
+⎿  (no content)
+
+❯ /plan
+⎿ Enabled plan mode
+
+❯ /model
+⎿ Kept model as Sonnet 4.6 (default)
+
+❯ Use haiku model. I need to develop a web app to deploy on vercel. The scope of the app is to manage finances. You can
+reference on It is a web app for manage my family finances.
+
+## FSD methodology for structure
+
+## MVP Stack
+
+- Core:
+
+  Next.js (fullstack)
+  TypeScript
+  Tailwind CSS
+  Prisma
+  MySQL
+
+- Add-ons:
+
+  NextAuth.js (auth)
+  Zod (validation)
+  Recharts (charts)
+
+## MVP Features
+
+- Core
+  Board (Years x months × categories grid)
+  Inline editable cells
+  Auto-calculations:
+  Monthly total
+  Category total
+  Savings
+- Users
+  Email/password auth
+  Shared board
+  Invite by email
+- Finance
+  Income / Expense / Loan entries
+  Notes per entry
+
+## Key UX (Critical)
+
+- Editing
+  Click → edit
+  Enter / Tab navigation
+  No modals
+- Always visible
+  Sticky totals (bottom + right)
+  Top summary:
+  Income | Expenses | Savings
+- Feedback
+  Instant calculations (no loading)
+  Auto-save indicator
+  Visual clarity
+  Colors
+  Category icons
+- Duplicate month
+- notes per entry
+- category system
+- Highlight updated cells
+- Budgets
+- Recurring transactions
+- Mobile-friendly view
+- Store dates in UTC
+- Use DB transactions, but just reference, if you have some better solutions, give me it. Visual it should be: a
+  board (faimily context, it has an owner that can invite another members) with featueres: select years, for each year
+  show a grid for each month. Now for that i am using google sheets, here is an screenshot . confirm that you get
+  screenhsot. Let's make a plan to develop it.
+
+● I don't see any screenshot attached to your message. Could you share it? In the meantime, let me explore the existing
+server codebase to understand what's already built.
+
+● Explore(Explore existing server codebase structure)
+⎿  Done (28 tool uses · 37.4k tokens · 1m 26s)
+(ctrl+o to expand)
+
+● User answered Claude's questions:
+⎿  · I didn't receive any screenshot in your message. Can you share it? (It's important to understand the Google
+Sheets layout you're replicating.) → (Image attached)
+· Where will the new Next.js app live? → I deleted all files from the old project
+· Where will MySQL be hosted? Vercel doesn't host databases, so a separate provider is needed. → we will use aiven
+· Should the board be shared per family (one board, multiple members) or per user (each member has their own
+board)? → Per family / shared (Recommended)
+⎿  [Image #1]
+
+● Got the screenshot. Now I have a clear picture. Let me design the full plan.
+
+● Plan(Design Next.js FSD architecture plan)
+⎿  Done (16 tool uses · 23.8k tokens · 3m 14s)
+(ctrl+o to expand)
+
+● Now let me write the final plan file.
+
+● Updated plan
+⎿  /plan to preview
+
+● Now let me call ExitPlanMode.
+⎿  Tool use rejected
+
+● Looking at your screenshot, I can see "Credit1 Maib", "Credit2 Victoria", "Credit3 Maximum" — those are recurring loan
+payments. Let me add the Loan entity to the plan.
+
+Read 1 file (ctrl+o to expand)
+
+● Updated plan
+⎿  /plan to preview
+
+● Now add the Loan entity to the FSD structure and API routes:
+
+● Updated plan
+⎿  Error editing file
+
+Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Updated plan
+⎿  /plan to preview
+
+● Now add loan API routes and update the routes table:
+
+● Updated plan
+⎿  /plan to preview
+
+● Also add a loans feature folder and update the critical files section:
+
+● Updated plan
+⎿  Error editing file
+
+Searched for 4 patterns (ctrl+o to expand)
+
+● Updated plan
+⎿  /plan to preview
+
+● Also add the loan API route files and a loans widget to the app:
+
+● Updated plan
+⎿  Error editing file
+
+Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Updated plan
+⎿  /plan to preview
+
+● Finally add loans to the board settings page and implementation phases:
+
+● Updated plan
+⎿  /plan to preview
+
+● Updated plan
+⎿  /plan to preview
+⎿  Tool use rejected
+
+● Got it. In the grid, each month column renders loan payment rows first (Loan1, Loan2...), then regular expense rows
+(Category1, Category2...). The Loan entity still exists for tracking the full debt details, but in the month view
+loans appear as specially-ordered entries.
+
+● Updated plan
+⎿  /plan to preview
+
+● Now update the MonthColumn component description to reflect the two-section rendering:
+
+● Updated plan
+⎿  Error editing file
+
+Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Updated plan
+⎿  /plan to preview
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Ready to code?
+
+Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+Family Finance Management — Next.js Web App Plan
+
+Context
+
+Replacing a Google Sheets workflow for managing family finances. The sheet has months displayed side by side, each
+with a 3-column layout: Category | Note | Amount, a total row, and a savings row. The new app replicates this grid UX
+in a browser, adds auth, multi-member family boards, inline editing with auto-save, and yearly charts. Deployed on
+Vercel with MySQL on Aiven.
+
+The existing directory had an Express + MySQL prototype (now deleted). We start fresh with Next.js fullstack in the
+same directory.
+
+---
+
+Stack
+
+┌────────────┬──────────────────────────────────────────────────┐
+│ Concern │ Choice │
+├────────────┼──────────────────────────────────────────────────┤
+│ Framework │ Next.js 14+ App Router (fullstack) │
+├────────────┼──────────────────────────────────────────────────┤
+│ Language │ TypeScript │
+├────────────┼──────────────────────────────────────────────────┤
+│ Styling │ Tailwind CSS │
+├────────────┼──────────────────────────────────────────────────┤
+│ ORM │ Prisma │
+├────────────┼──────────────────────────────────────────────────┤
+│ Database │ MySQL on Aiven │
+├────────────┼──────────────────────────────────────────────────┤
+│ Auth │ NextAuth.js (Credentials provider, JWT sessions) │
+├────────────┼──────────────────────────────────────────────────┤
+│ Validation │ Zod │
+├────────────┼──────────────────────────────────────────────────┤
+│ Charts │ Recharts │
+├────────────┼──────────────────────────────────────────────────┤
+│ Deploy │ Vercel │
+├────────────┼──────────────────────────────────────────────────┤
+│ Model │ Haiku (user preference) │
+└────────────┴──────────────────────────────────────────────────┘
+
+---
+
+Prisma Schema (prisma/schema.prisma)
+
+generator client {
+provider = "prisma-client-js"
+}
+
+datasource db {
+provider = "mysql"
+url = env("DATABASE_URL")
+}
+
+model User {
+id String @id @default(cuid())
+email String @unique
+name String?
+hashedPassword String
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+ownedBoards Board[] @relation("BoardOwner")
+boardMembers BoardMember[]
+}
+
+model Board {
+id String @id @default(cuid())
+name String
+ownerId String
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+owner User @relation("BoardOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+members BoardMember[]
+monthlyBudgets MonthlyBudget[]
+categories Category[]
+}
+
+model BoardMember {
+id String @id @default(cuid())
+boardId String
+userId String
+role BoardMemberRole @default(member)
+joinedAt DateTime @default(now())
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+@@unique([boardId, userId])
+}
+
+enum BoardMemberRole { owner member }
+
+model MonthlyBudget {
+id String @id @default(cuid())
+boardId String
+year Int
+month Int // 1–12
+income Decimal @default(0) @db.Decimal(12, 2)
+createdAt DateTime @default(now())
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+entries Entry[]
+@@unique([boardId, year, month])
+}
+
+model Entry {
+id String @id @default(cuid())
+monthlyBudgetId String
+categoryName String
+note String?
+amount Decimal @db.Decimal(12, 2)
+type EntryType @default(expense)
+color String? // hex, nullable = no highlight
+sortOrder Int @default(0)
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+monthlyBudget MonthlyBudget @relation(fields: [monthlyBudgetId], references: [id], onDelete: Cascade)
+}
+
+enum EntryType { expense income }
+
+model Category {
+id String @id @default(cuid())
+boardId String
+name String
+color String?
+icon String?
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+@@unique([boardId, name])
+}
+
+model Loan {
+id String @id @default(cuid())
+boardId String
+name String // e.g. "Credit Maib"
+lender String? // e.g. "Maib", "Victoria", "Maximum"
+totalAmount Decimal @db.Decimal(12, 2)
+paidAmount Decimal @default(0) @db.Decimal(12, 2)
+monthlyPayment Decimal @db.Decimal(12, 2)
+startDate DateTime
+endDate DateTime?
+isActive Boolean @default(true)
+notes String?
+createdAt DateTime @default(now())
+updatedAt DateTime @updatedAt
+board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+entries Entry[] // monthly payment entries linked to this loan
+}
+
+Update Entry to optionally reference a loan:
+model Entry {
+...
+loanId String?
+loan Loan? @relation(fields: [loanId], references: [id], onDelete: SetNull)
+}
+
+Key decisions:
+
+- Decimal @db.Decimal(12,2) — never Float for money
+- Category is autocomplete-only, not a FK on Entry (free-form like spreadsheet)
+- color on Entry is nullable — green rows in screenshot are per-entry
+- sortOrder uses gaps of 1000 for easy reordering
+- Loan.paidAmount is derived on read (sum of linked entries) or updated on each payment entry
+- Loan.lender maps to the note column (e.g., "Maib", "Victoria", "Maximum")
+- Display order in MonthColumn: loan payment entries first (sorted by sortOrder), then regular expense entries. This
+  mirrors the screenshot exactly (Credit1/2/3 on top, then Mâncare/Comunale etc.)
+- Entry.loanId nullable — loan entries have it set, regular entries do not
+- Category name for a loan entry = loan name (e.g., "Credit1"); note = lender name
+
+---
+
+FSD Directory Structure
+
+src/
+├── app/
+│ ├── (auth)/login/page.tsx
+│ ├── (auth)/register/page.tsx
+│ ├── (dashboard)/
+│ │ ├── layout.tsx # Auth guard shell
+│ │ ├── page.tsx # → redirect to first board
+│ │ └── board/[boardId]/
+│ │ ├── page.tsx # Main board view (RSC)
+│ │ └── settings/page.tsx
+│ ├── api/
+│ │ ├── auth/[...nextauth]/route.ts
+│ │ ├── auth/register/route.ts
+│ │ ├── boards/route.ts # GET list, POST create
+│ │ ├── boards/[boardId]/route.ts
+│ │ ├── boards/[boardId]/members/route.ts
+│ │ ├── boards/[boardId]/budgets/route.ts # GET ?year=, POST create month
+│ │ ├── boards/[boardId]/budgets/[budgetId]/route.ts # PATCH income
+│ │ ├── boards/[boardId]/budgets/[budgetId]/entries/route.ts
+│ │ ├── boards/[boardId]/budgets/[budgetId]/duplicate/route.ts
+│ │ ├── boards/[boardId]/categories/route.ts
+│ │ ├── boards/[boardId]/loans/route.ts # GET list, POST create
+│ │ ├── loans/[loanId]/route.ts # PATCH update, DELETE/close
+│ │ └── entries/[entryId]/route.ts # PATCH, DELETE
+│ ├── globals.css
+│ └── layout.tsx
+│
+├── widgets/
+│ ├── board-grid/ui/BoardGrid.tsx # Horizontal scroll of MonthColumn[]
+│ ├── year-navigator/ui/YearNavigator.tsx
+│ ├── summary-bar/ui/SummaryBar.tsx # Income | Expenses | Savings
+│ ├── yearly-chart/ui/YearlyChart.tsx # Recharts ComposedChart
+│ └── loans-panel/ui/LoansPanel.tsx # List of active loans with progress bars
+│
+├── features/
+│ ├── auth/login/ui/LoginForm.tsx
+│ ├── auth/register/ui/RegisterForm.tsx
+│ ├── board-management/create-board/ui/CreateBoardForm.tsx
+│ ├── board-management/invite-member/ui/InviteMemberForm.tsx
+│ ├── entry-editing/
+│ │ ├── ui/InlineCell.tsx # Click→edit, view/edit toggle
+│ │ ├── ui/CategoryAutocomplete.tsx # Combobox with board categories
+│ │ ├── ui/ColorPicker.tsx
+│ │ ├── model/useAutoSave.ts # 500ms debounce + optimistic update
+│ │ └── model/entrySchema.ts
+│ ├── month-operations/duplicate-month/
+│ ├── month-operations/set-income/ui/IncomeCell.tsx
+│ └── loan-management/
+│ ├── ui/CreateLoanForm.tsx # name, lender, total, monthly, startDate
+│ ├── ui/LoanSelector.tsx # dropdown to link an entry → loan
+│ └── api/createLoan.ts
+│
+├── entities/
+│ ├── monthly-budget/
+│ │ ├── model/calculations.ts # totalExpenses(), savings() pure fns
+│ │ ├── ui/MonthColumn.tsx # Full month block
+│ │ ├── ui/MonthHeader.tsx
+│ │ └── ui/MonthFooter.tsx # Subtotal + Savings rows (sticky)
+│ ├── entry/ui/EntryRow.tsx # Category | Note | Amount | Actions
+│ ├── category/model/types.ts
+│ └── loan/
+│ ├── model/types.ts # Loan, LoanWithProgress interfaces
+│ ├── model/calculations.ts # remainingAmount(), remainingMonths() pure fns
+│ └── ui/LoanCard.tsx # Name, progress bar, paid/remaining amounts
+│
+└── shared/
+├── auth/authOptions.ts # NextAuth Credentials config
+├── auth/getServerSession.ts
+├── db/prisma.ts # PrismaClient singleton
+├── middleware/withBoardAccess.ts # Auth + membership check wrapper
+├── hooks/useDebounce.ts
+├── hooks/useKeyboardNav.ts # Enter/Tab/Escape cell navigation
+├── lib/formatCurrency.ts
+├── lib/monthNames.ts # Romanian month names array
+├── lib/cn.ts # clsx + tailwind-merge
+└── ui/ # Button, Input, Spinner, SaveIndicator
+
+---
+
+Component Hierarchy (Board Grid)
+
+BoardPage (RSC — server fetches full year data)
+└── BoardGridClient (Client Component — holds mutable state)
+├── SummaryBar (Income | Expenses | Savings)
+├── YearNavigator (← 2024 →)
+├── BoardGrid (overflow-x-auto, flex, gap-4)
+│ └── MonthColumn × 12
+│ ├── MonthHeader (month name + IncomeCell + Total)
+│ ├── [Loan section] EntryRow × N (entries where loanId is set)
+│ │ ├── LoanBadge (small indicator)
+│ │ ├── InlineCell (categoryName) → LoanSelector
+│ │ ├── InlineCell (note / lender)
+│ │ ├── InlineCell (amount)
+│ │ └── DeleteRowButton
+│ ├── AddLoanPaymentButton (+ Add loan)
+│ ├── [divider]
+│ ├── [Expense section] EntryRow × N (entries where loanId is null)
+│ │ ├── InlineCell (categoryName) → CategoryAutocomplete
+│ │ ├── InlineCell (note)
+│ │ ├── InlineCell (amount)
+│ │ ├── ColorPicker
+│ │ └── DeleteRowButton
+│ ├── AddRowButton (+ Add expense)
+│ └── MonthFooter (Total row + Savings row — sticky)
+└── YearlyChart
+
+Each MonthColumn is 280px fixed width, flex-shrink-0. Mobile: full viewport width with horizontal scroll.
+
+---
+
+State Management
+
+No Redux/Zustand. Data scope is bounded (~360 rows max).
+
+- Initial data: RSC fetches full year on server, passes as initialData prop
+- Mutations: explicit fetch calls to API routes
+- Optimistic updates: React 19 useOptimistic in useAutoSave
+- Category autocomplete: SWR or simple useState fetch-on-first-focus
+
+useAutoSave(500ms debounce):
+
+1.  User types → local state update (instant)
+2.  After 500ms → updateOptimistic() + PATCH /api/entries/[id]
+3.  Success → SaveIndicator shows ✓
+4.  Error → revert optimistic state + toast
+
+Use API Routes (not Server Actions) — inline cell PATCH calls don't fit Server Action's form-submission model. API
+routes give full control over optimistic update lifecycle.
+
+---
+
+Auth Setup
+
+shared/auth/authOptions.ts — Credentials provider with bcrypt password check, JWT session with user.id in token.
+
+src/middleware.ts — next-auth/middleware protects /board/:path\* automatically.
+
+POST /api/auth/register — separate from NextAuth, creates user with bcrypt.hash(password, 12).
+
+---
+
+Keyboard Navigation
+
+useKeyboardNav attaches to MonthColumn:
+
+- Enter → same column, next row (or add row if last)
+- Tab → next column, same row (wraps to next row from amount)
+- Escape → cancel, revert to saved value
+
+Cells use data-row / data-col attributes for DOM-based focus targeting.
+
+---
+
+Key API Routes Summary
+
+┌──────────────┬──────────────────────────────────────────────┬──────────────────────────┐
+│ Method │ Path │ Purpose │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/auth/register │ Create user │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET/POST │ /api/boards │ List/create boards │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/members │ Invite by email │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET │ /api/boards/[boardId]/budgets?year= │ Full year data │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/budgets/[id]/entries │ Add entry │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ PATCH │ /api/entries/[entryId] │ Update entry field │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ DELETE │ /api/entries/[entryId] │ Delete entry │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ POST │ /api/boards/[boardId]/budgets/[id]/duplicate │ Copy month entries │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET │ /api/boards/[boardId]/categories │ Autocomplete suggestions │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ GET/POST │ /api/boards/[boardId]/loans │ List loans / create loan │
+├──────────────┼──────────────────────────────────────────────┼──────────────────────────┤
+│ PATCH/DELETE │ /api/loans/[loanId] │ Update or close a loan │
+└──────────────┴──────────────────────────────────────────────┴──────────────────────────┘
+
+All board-scoped routes use withBoardAccess wrapper (checks session + BoardMember row).
+
+---
+
+Deployment
+
+prisma/schema.prisma — Aiven MySQL requires SSL:
+DATABASE_URL=mysql://user:pass@host:port/db?ssl={"rejectUnauthorized":true}
+
+package.json:
+"postinstall": "prisma generate",
+"build": "prisma migrate deploy && next build"
+
+Vercel env vars: DATABASE_URL, NEXTAUTH_URL, NEXTAUTH_SECRET
+
+PrismaClient singleton (shared/db/prisma.ts):
+const globalForPrisma = globalThis as { prisma?: PrismaClient }
+export const prisma = globalForPrisma.prisma ?? new PrismaClient()
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+---
+
+Implementation Phases
+
+┌───────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Phase │ What │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1 — Foundation │ create-next-app, Prisma schema + migrate, auth (register/login), middleware │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 2 — Board mgmt │ Create board, invite member, board list page │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 3 — Grid core │ Fetch year data (RSC), MonthColumn, MonthHeader/Footer, EntryRow (view only) │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 4 — Inline │ InlineCell, useAutoSave, keyboard nav, CategoryAutocomplete, CRUD API routes │
+│ editing │ │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 5 — Polish │ SummaryBar, YearNavigator, YearlyChart, DuplicateMonth, color picker, mobile │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 5b — Loans │ Loan CRUD (create/edit/close), LoanSelector in EntryRow, LoansPanel widget, progress │
+│ │ tracking │
+├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 6 — Deploy │ Vercel setup, Aiven prod DB, migrate, E2E test │
+└───────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+---
+
+Critical Files
+
+- prisma/schema.prisma — foundation; Decimal types, cascade deletes, unique constraints
+- src/shared/db/prisma.ts — singleton pattern (critical for Vercel serverless)
+- src/shared/auth/authOptions.ts — NextAuth Credentials + JWT callbacks
+- src/shared/middleware/withBoardAccess.ts — single auth gate for all board API routes
+- src/entities/monthly-budget/ui/MonthColumn.tsx — central UI; all grid features compose here
+- src/features/entry-editing/model/useAutoSave.ts — core UX differentiator
+
+---
+
+Verification
+
+1.  prisma studio — verify schema relations and data integrity
+2.  Register → login → create board → invite second user
+3.  Add entries, edit inline, verify auto-save fires and SaveIndicator shows ✓
+4.  Tab/Enter navigation moves focus correctly across cells
+5.  Savings row = income − sum(expenses) updates instantly
+6.  Duplicate month copies all entries to target month
+7.  Yearly chart renders bars for all 12 months
+8.  Mobile: horizontal scroll works, cells are tappable
+9.  Vercel preview URL: full auth + board flow works end-to-end

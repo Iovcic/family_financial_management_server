@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Bash(git *)",
+      "Bash(npm info *2)",
+      "Bash(npx next *)",
+      "Read(//tmp/**)",
+      "Bash(taskkill *)",
+      "Bash(curl *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(grep -E \"\\\\.\\(ts|js|json\\)$\")",
+      "Bash(npm install *)"
+    ]
+  }
+}

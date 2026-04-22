@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  name           String?
+  hashedPassword String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  ownedBoards    Board[]       @relation("BoardOwner")
+  boardMembers   BoardMember[]
+}
+
+model Board {
+  id             String          @id @default(cuid())
+  name           String
+  ownerId        String
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  owner          User            @relation("BoardOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members        BoardMember[]
+  monthlyBudgets MonthlyBudget[]
+  categories     Category[]
+  loans          Loan[]
+}
+
+model BoardMember {
+  id       String          @id @default(cuid())
+  boardId  String
+  userId   String
+  role     BoardMemberRole @default(member)
+  joinedAt DateTime        @default(now())
+  board    Board           @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+}
+
+enum BoardMemberRole {
+  owner
+  member
+}
+
+model MonthlyBudget {
+  id        String   @id @default(cuid())
+  boardId   String
+  year      Int
+  month     Int
+  income    Decimal  @default(0) @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+  board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  entries   Entry[]
+
+  @@unique([boardId, year, month])
+}
+
+model Entry {
+  id              String        @id @default(cuid())
+  monthlyBudgetId String
+  categoryName    String
+  note            String?
+  amount          Decimal       @db.Decimal(12, 2)
+  type            EntryType     @default(expense)
+  color           String?
+  sortOrder       Int           @default(0)
+  loanId          String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  monthlyBudget   MonthlyBudget @relation(fields: [monthlyBudgetId], references: [id], onDelete: Cascade)
+  loan            Loan?         @relation(fields: [loanId], references: [id], onDelete: SetNull)
+}
+
+enum EntryType {
+  expense
+  income
+}
+
+model Category {
+  id      String  @id @default(cuid())
+  boardId String
+  name    String
+  color   String?
+  icon    String?
+  board   Board   @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, name])
+}
+
+model Loan {
+  id             String    @id @default(cuid())
+  boardId        String
+  name           String
+  lender         String?
+  totalAmount    Decimal   @db.Decimal(12, 2)
+  paidAmount     Decimal   @default(0) @db.Decimal(12, 2)
+  monthlyPayment Decimal   @db.Decimal(12, 2)
+  startDate      DateTime
+  endDate        DateTime?
+  isActive       Boolean   @default(true)
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  board          Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  entries        Entry[]
+}
