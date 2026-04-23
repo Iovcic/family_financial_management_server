@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getServerSession } from "@/shared/auth/getServerSession";
 import { prisma } from "@/shared/db/prisma";
 import { serializeBudgets } from "@/shared/lib/serializeDecimal";
-import { BoardGridClient } from "./BoardGridClient";
+import { BoardGridClient } from "@/widgets/board-grid/ui/BoardGridClient";
 
 export default async function BoardPage({
   params,
@@ -12,11 +12,13 @@ export default async function BoardPage({
   params: Promise<{ boardId: string }>;
   searchParams: Promise<{ year?: string }>;
 }) {
-  const { boardId } = await params;
-  const { year: yearParam } = await searchParams;
+  const [{ boardId }, { year: yearParam }, session] = await Promise.all([
+    params,
+    searchParams,
+    getServerSession(),
+  ]);
   const year = yearParam ? parseInt(yearParam) : new Date().getFullYear();
 
-  const session = await getServerSession();
   if (!session) redirect("/login");
 
   const board = await prisma.board.findUnique({
@@ -35,7 +37,6 @@ export default async function BoardPage({
   });
 
   const budgets = serializeBudgets(rawBudgets);
-
   return (
     <div className="flex h-screen flex-col">
       <nav className="flex items-center gap-4 border-b border-gray-200 bg-white px-4 py-2 text-sm">

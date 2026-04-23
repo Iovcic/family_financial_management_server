@@ -33,7 +33,8 @@ export function InlineCell({
       inputRef.current?.focus()
       inputRef.current?.select()
     }
-  }, [editing, value])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing])
 
   function commit() {
     setEditing(false)

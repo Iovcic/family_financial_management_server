@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "prisma migrate deploy && next build",
     "start": "next start",
+    "prisma": "npx prisma studio",
     "lint": "eslint",
     "postinstall": "prisma generate"
   },

@@ -10,7 +10,10 @@
       "Bash(curl *)",
       "PowerShell(Stop-Process *)",
       "Bash(grep -E \"\\\\.\\(ts|js|json\\)$\")",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Read(//c/Users/Iovcik/.claude/**)",
+      "Read(//c/Users/Iovcik/**)",
+      "Bash(read -t 5 result)"
     ]
   }
 }

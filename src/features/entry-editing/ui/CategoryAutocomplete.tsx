@@ -29,8 +29,15 @@ export function CategoryAutocomplete({
 }: Props) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(value)
+  const [prevValue, setPrevValue] = useState(value)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
+
+  // Sync draft from prop when not actively editing (no effect needed)
+  if (prevValue !== value && !open) {
+    setPrevValue(value)
+    setDraft(value)
+  }
 
   const { data } = useSWR<{ categories: CategoryOption[] }>(
     `/api/boards/${boardId}/categories`,
@@ -41,10 +48,6 @@ export function CategoryAutocomplete({
   const options = (data?.categories ?? []).filter(c =>
     c.name.toLowerCase().includes(draft.toLowerCase()),
   )
-
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
 
   function commit(val: string) {
     setOpen(false)

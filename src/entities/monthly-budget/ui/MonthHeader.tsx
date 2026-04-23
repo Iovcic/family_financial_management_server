@@ -29,7 +29,7 @@ export function MonthHeader({
 }: Props) {
   const [creating, setCreating] = useState(false)
   const [editingIncome, setEditingIncome] = useState(false)
-  const [incomeDraft, setIncomeDraft] = useState(income.toFixed(2))
+  const [incomeDraft, setIncomeDraft] = useState('')
 
   async function handleCreate() {
     setCreating(true)

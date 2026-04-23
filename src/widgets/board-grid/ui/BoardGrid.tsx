@@ -1,30 +1,18 @@
 'use client'
 
-import { MonthColumn } from '@/entities/monthly-budget/ui/MonthColumn'
+import { useMemo } from 'react'
+import { MonthColumn } from './MonthColumn'
 import type { SerializedBudget } from '@/shared/lib/serializeDecimal'
 
 interface Props {
-  boardId: string
-  year: number
   budgets: SerializedBudget[]
-  onBudgetCreated?: (budget: SerializedBudget) => void
-  onAddEntry?: (budgetId: string) => void
-  onUpdateEntry?: (entryId: string, field: string, value: string | null) => void
-  onDeleteEntry?: (entryId: string) => void
-  onIncomeUpdate?: (budgetId: string, newIncome: string) => void
 }
 
-export function BoardGrid({
-  boardId,
-  year,
-  budgets,
-  onBudgetCreated,
-  onAddEntry,
-  onUpdateEntry,
-  onDeleteEntry,
-  onIncomeUpdate,
-}: Props) {
-  const budgetsByMonth = new Map(budgets.map(b => [b.month, b]))
+export function BoardGrid({ budgets }: Props) {
+  const budgetsByMonth = useMemo(
+    () => new Map(budgets.map(b => [b.month, b])),
+    [budgets],
+  )
 
   return (
     <div className="flex h-full flex-row overflow-x-auto">
@@ -32,14 +20,7 @@ export function BoardGrid({
         <MonthColumn
           key={month}
           month={month}
-          boardId={boardId}
-          year={year}
           budget={budgetsByMonth.get(month) ?? null}
-          onBudgetCreated={onBudgetCreated}
-          onAddEntry={onAddEntry}
-          onUpdateEntry={onUpdateEntry}
-          onDeleteEntry={onDeleteEntry}
-          onIncomeUpdate={onIncomeUpdate}
         />
       ))}
     </div>

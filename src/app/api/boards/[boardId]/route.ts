@@ -20,6 +20,8 @@ export async function GET(
     if (!board) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
+
+
     return NextResponse.json(board)
   })(req, { params: resolvedParams })
 }
