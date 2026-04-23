@@ -1,0 +1,188 @@
+# Claude Code Workflow Configuration
+# Ready-to-use multi-agent workflow
+
+version: 1
+
+orchestrator:
+  description: Main controller that routes tasks between agents and enforces workflow gates
+  rules:
+    - Always start with planner
+    - Never skip validator
+    - Enforce scope lock after planning
+
+agents:
+  planner:
+    description: Analyze task and define strict implementation plan
+    input:
+      - task_description
+    output_schema:
+      scope: array
+      acceptanceCriteria: array
+      filesToChange: array
+      risks: array
+      blockedBy: array
+    rules:
+      - Do NOT write code
+      - Be explicit and minimal
+      - Define clear acceptance criteria
+
+  builder:
+    description: Implements code strictly based on planner output
+    input:
+      - plan
+    rules:
+      - Do NOT expand scope
+      - Commit in small steps
+      - Output diffs, not full files
+      - Follow project conventions
+
+  validator:
+    description: Hard gate for code quality and correctness
+    commands:
+      - npx tsc --noEmit
+      - npx eslint .
+      - npm run build
+    optional:
+      - npm test
+    rules:
+      - STOP workflow on failure
+      - Do NOT auto-fix silently
+
+  reviewer:
+    description: Validates implementation against plan
+    input:
+      - plan
+      - diff
+    rules:
+      - Check acceptance criteria only
+      - Detect over-engineering
+      - Do NOT rewrite code
+
+  release:
+    description: Handles deployment and PR workflow
+    actions:
+      - create_pr
+      - deploy_preview
+      - merge_main
+
+skills:
+  analyze_codebase:
+    description: Scan files and detect dependencies and patterns
+    input:
+      - file_paths
+    output:
+      dependencies: array
+      patterns: array
+      risks: array
+
+  implement_feature:
+    description: Generate code changes based on plan
+    input:
+      - scoped_plan
+    output:
+      diff: string
+
+  run_validation:
+    description: Execute validation commands
+    output:
+      success: boolean
+      logs: string
+
+  review_against_criteria:
+    description: Compare implementation vs plan
+    output:
+      issues: array
+      status: pass|fail
+
+  deploy_preview:
+    description: Deploy to preview environment
+    output:
+      url: string
+
+commands:
+  feature_start:
+    description: Initialize new feature workflow
+    steps:
+      - checkout develop
+      - pull latest
+      - create branch feature/<name>
+      - run planner
+      - save plan
+
+  feature_build:
+    description: Implement feature
+    steps:
+      - load plan
+      - run builder
+      - commit changes
+
+  feature_validate:
+    description: Run hard validation gate
+    steps:
+      - run validator
+      - if fail: stop
+      - if pass: continue
+
+  feature_review:
+    description: Review implementation
+    steps:
+      - run reviewer
+      - if fail: return to builder
+
+  feature_stage:
+    description: Deploy preview
+    steps:
+      - rebase branch
+      - push
+      - deploy preview
+
+  feature_ship:
+    description: Release to production
+    steps:
+      - create PR
+      - merge to main
+      - trigger deploy
+      - monitor logs
+
+git:
+  strategy: git-flow
+  branches:
+    main: production
+    develop: integration
+    feature: feature/*
+    bugfix: bugfix/*
+
+  commit_convention: "feat(scope): description"
+
+  commands:
+    start_feature: |
+      git checkout develop
+      git pull origin develop
+      git checkout -b feature/<name>
+
+    commit: |
+      git add .
+      git commit -m "feat(scope): message"
+
+    push: |
+      git push origin feature/<name>
+
+    rebase: |
+      git fetch origin
+      git rebase origin/develop
+
+    merge_main: |
+      git checkout main
+      git merge feature/<name>
+      git push origin main
+
+state:
+  persistence:
+    plan_file: .claude/plan.json
+    logs: .claude/logs/
+
+rules:
+  scope_lock: true
+  require_validation: true
+  diff_only_changes: true
+  no_agent_overlap: true

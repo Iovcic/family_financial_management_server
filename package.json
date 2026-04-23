@@ -8,7 +8,13 @@
     "start": "next start",
     "prisma": "npx prisma studio",
     "lint": "eslint",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "feat:start": "npx tsx scripts/task.ts feature_start",
+    "feat:build": "npx tsx scripts/task.ts feature_build",
+    "feat:validate": "npx tsx scripts/task.ts feature_validate",
+    "feat:review": "npx tsx scripts/task.ts feature_review",
+    "feat:stage": "npx tsx scripts/task.ts feature_stage",
+    "feat:ship": "npx tsx scripts/task.ts feature_ship"
   },
   "dependencies": {
     "@prisma/adapter-mariadb": "^7.7.0",
